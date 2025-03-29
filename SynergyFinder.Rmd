@@ -1,0 +1,774 @@
+---
+title: "Calculating Drug Synergy Combinations with Replicates"
+author: "Kieran Redpath"
+date: "`r format(Sys.Date(), '%d %B, %Y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Instructions
+* You can run code from a .Rmd document using "Ctrl + Enter" ("Cmd + Return" on mac) on the line or a highlighted block of text. Click the arrow in the top right corner of a chunk to run the entire chunk.
+* Ensure all packages are correctly installed (see "Required packages").
+* Substitute the default values under the heading "Input" with your desired values.
+* Click the "Knit" button at the top of your RStudio window.
+
+### Required packages
+* Only run this chunk of code the first time you use synergyfinder on your computer, but first make sure you delete a single # from the start of each line.
+* By default this code won't be included in the output document.
+```{r, include = F, echo = F}
+## Run these lines if the relevant package is not installed (remove the "#" first though)
+
+## dplyr and ggplot2
+# install.packages(c("dplyr", "ggplot2"))
+
+## gridExtra
+# install.packages("gridExtra")
+
+## openxlsx
+# install.packages("openxlsx", dependencies = TRUE)
+
+## synergyfinder
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("synergyfinder")
+```
+
+### Load packages and data
+```{r, message = F}
+# Load packages
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(openxlsx)
+library(synergyfinder)
+library(tidyverse)
+library(cowplot)
+```
+
+## Input
+* Edit this chunk to define the names of variables, including:
+* file in read.table should be the name of the file containing your data, which should be moved into this folder
+* synergy.type should be your desired synergy calculation
+* data.type should be how your data is expressed
+```{r}
+# Load combination data for any number of correctly indexed drug combinations (see the template file for what this should look like).
+# replace filename with a .xlsx file containing your data in the right format
+synergy.frame <- read.xlsx("SynergyFinderData.xlsx")
+synergy.frame <- na.omit(synergy.frame)
+
+# Define which type of synergy score you want to use ("HSA", "Loewe", "Bliss", or "ZIP")
+synergy.type = "Loewe"
+
+# Define if your data is expressed as "viability" or "inhibition". Either way it should be as a percentage, not a decimal (i.e. out of 100, not 1)
+data.type = "viability"
+```
+
+### Process data
+```{r, warning = F, include = F}
+# Set the random seed so results are reproducible
+set.seed(42)
+
+# Process the synergy data (check that data.type is correct for your data, accepts "inhibition" or "viability")
+dose.response.mat <- ReshapeData(synergy.frame,
+                                 data_type = data.type,
+                                 impute = T,
+                                 noise = F,
+                                 iteration = 100
+)
+```
+
+### Plot dose response curves
+* Also saves these as .png's
+```{r, warning = F}
+# Plots curves within RStudio and the generated markdown document, but also saves a png in the current working directory
+# PlotDoseResponse(dose.response.mat, block_ids = dose.response.mat[["drug_pairs"]][["block_id"]], save_file = TRUE,  summary_statistic = NULL, file_type = "png")
+```
+
+### Calculate and visualise synergy scores across the inferred dose-response matrix
+* Also saves these as .png's
+```{r, warning = F}
+# Calculate synergy scores
+synergy.score <- CalculateSynergy(data = dose.response.mat,
+                                  method = synergy.type,
+                                  iteration = 100)
+
+# Visualise synergy scores, providing an average value and a visual indication of where synergy is high and low
+# Plots scores within RStudio and the generated markdown document, but also saves a png in the current working directory
+# PlotSynergy(synergy.score, type = "2D", method = synergy.type, block_ids = dose.response.mat[["drug_pairs"]][["block_id"]], summary_statistic = NULL, save_file = TRUE, file_type = "png")
+```
+
+### Extract data
+* This chunk of code extracts useful values from the data for visualization and plotting, for only the tested concentrations of each drug
+* Data for each combo is saved in a different element of the list "synergy.response.data"
+* By default the code won't be included in the output document because it's very long and complicated
+```{r, include = F, echo = F}
+# Create an empty list to enter data into
+synergy.response.data <- list()
+# Extract rows of values you've actually tested in the lab: removing the imputed values where n = 1
+# First extract response information (calculated mean from replicates and other statistics)
+tmp <- synergy.score[["response_statistics"]][which(synergy.score[["response_statistics"]]$n > 1),]
+# Remove NAs - not sure if this line is necessary (or it might break stuff)
+tmp <- na.omit(synergy.score[["response_statistics"]])
+# Combine this with synergy scores (calculated mean and other statistics)
+tmp <- merge(tmp, synergy.score[["synergy_scores_statistics"]],
+             by = c("block_id", "conc1", "conc2"),
+             sort = F)
+
+# Add all of these values into a list that contains each combination/blocks data as a separate element
+for(x in unique(tmp$block_id)){
+  # Define the drug combination for this block
+  block = synergy.score[["drug_pairs"]]$block_id[x]
+  drug1 = synergy.score[["drug_pairs"]]$drug1[x]
+  drug2 = synergy.score[["drug_pairs"]]$drug2[x]
+  synergy.response.data[[x]] <- tmp[tmp$block_id == x,]
+  
+  # Move single drug response data into new columns
+  # Create new columns for response and sem for drug 1
+  synergy.response.data[[x]][, paste0(drug1, "_response")] <- NA
+  synergy.response.data[[x]][, paste0(drug1, "_sem")] <- NA
+  # Create new columns for response and sem for drug 2
+  synergy.response.data[[x]][, paste0(drug2, "_response")] <- NA
+  synergy.response.data[[x]][, paste0(drug2, "_sem")] <- NA
+  
+  # Move response values for drug 1 into a new column for readability
+  # Define the value of y and remove 0's
+  y <- unique(synergy.response.data[[x]]$conc1)
+  y <- y[! y %in% "0"]
+  # Move values from "response" to "drug1_response" based on conditions
+  for(z in 1:length(y)){
+    synergy.response.data[[x]][, paste0(drug1, "_response")][synergy.response.data[[x]]$conc1 == y[z]] <- synergy.response.data[[x]]$response_mean[synergy.response.data[[x]]$conc1 == y[z] & synergy.response.data[[x]]$conc2 == 0]
+  }
+  # Do the same for "response_sem"
+  for(z in 1:length(y)){
+    synergy.response.data[[x]][, paste0(drug1, "_sem")][synergy.response.data[[x]]$conc1 == y[z]] <- synergy.response.data[[x]]$response_sem[synergy.response.data[[x]]$conc1 == y[z] & synergy.response.data[[x]]$conc2 == 0]
+  }
+  
+  # Move response values for drug 2 into a new column for readability
+  # Define the value of y and remove 0's
+  y <- unique(synergy.response.data[[x]]$conc2)
+  y <- y[! y %in% "0"]
+  # Move values from "response" to "drug2_response" based on conditions
+  for(z in 1:length(y)){
+    synergy.response.data[[x]][, paste0(drug2, "_response")][synergy.response.data[[x]]$conc2 == y[z]] <- synergy.response.data[[x]]$response_mean[synergy.response.data[[x]]$conc2 == y[z] & synergy.response.data[[x]]$conc1 == 0]
+  }
+  # Do the same for "response_sem"
+  for(z in 1:length(y)){
+    synergy.response.data[[x]][, paste0(drug2, "_sem")][synergy.response.data[[x]]$conc2 == y[z]] <- synergy.response.data[[x]]$response_sem[synergy.response.data[[x]]$conc2 == y[z] & synergy.response.data[[x]]$conc1 == 0]
+  }
+  
+  # Remove extra rows
+  synergy.response.data[[x]] <- synergy.response.data[[x]][!synergy.response.data[[x]]$conc1 == 0, ]
+  synergy.response.data[[x]] <- synergy.response.data[[x]][!synergy.response.data[[x]]$conc2 == 0, ]
+  
+  # Define which columns you want to keep - currently this is designed for simplicity and only includes standard error of the mean (but this should probably actually be standard deviation)
+  keep.columns <- c("conc1", "conc2",
+                    paste0(drug1, "_response"), paste0(drug1, "_sem"),
+                    paste0(drug2, "_response"), paste0(drug2, "_sem"),
+                    "response_mean", "response_sem",
+                    paste0(synergy.type, "_synergy_mean"), paste0(synergy.type, "_synergy_sem"))
+  synergy.response.data[[x]] <- synergy.response.data[[x]][, keep.columns]
+  
+  # Rename rows for readability and plotting
+  combo.names <- paste0(drug1, "_",
+                        synergy.response.data[[x]]$conc1, dose.response.mat[["drug_pairs"]][["conc_unit1"]][x],
+                        "_X_", drug2, "_",
+                        synergy.response.data[[x]]$conc2, dose.response.mat[["drug_pairs"]][["conc_unit2"]][x])
+  rownames(synergy.response.data[[x]]) <- combo.names
+  # Rename some columns for readability and plotting
+  synergy.response.data[[x]] <- synergy.response.data[[x]] %>% rename(
+    !!paste0(drug1, "_conc") := "conc1",
+    !!paste0(drug2, "_conc") := "conc2",
+    "Combo_response" = "response_mean",
+    "Combo_sem" = "response_sem")
+  # Rename each list element
+  names(synergy.response.data)[x] <- paste0(synergy.type, "_block", "_", x, "_", drug1, "_X_", drug2)
+}
+# Print or do further processing with new_data
+
+# Clean up environment
+rm("tmp","block", "drug1", "drug2", "combo.names", "keep.columns", "x", "y", "z")
+```
+
+### Save Data
+* This chunk of code saves a single excel workbook, with a tab for each drug combination
+```{r}
+wb <- createWorkbook(title = "Synergy_Response_Data")
+for(y in 1:length(synergy.response.data)){
+  # Individual files
+  # write.xlsx(synergy.response.data[[y]], file = paste0(names(synergy.response.data[y]), ".xlsx"), rowNames = T)
+  # Workbook  
+  prefix <- paste0(synergy.type, "_block_")
+  sheet.name <- gsub(paste0("^", prefix, ".*?_"), "", names(synergy.response.data)[y])
+  sheet.name <- gsub("_X_", "_", sheet.name)
+  
+  addWorksheet(wb, sheetName = sheet.name)
+  writeData(wb, sheet = sheet.name, synergy.response.data[[y]])
+}
+saveWorkbook(wb, file = paste0(synergy.type, "_", "Synergy_Response_Data.xlsx"), overwrite = T)
+
+# Clean up environment
+rm("y", "wb", "prefix")
+```
+
+# Transform the synergy.response.data from SynergyFinder.Rmd back to viability (it's been treated converted to inhibition, we want it back to how we put it in) - note that these terms aren't exactly correct for organoid area, but same idea
+* To do this, to every column in the list that ends in _response, apply 100-x
+```{r}
+# Apply the transformation to all data frames in the list
+trans.synergy.response.data <- lapply(synergy.response.data, function(df) {
+  # Identify columns ending in '_response'
+  response_cols <- grep("_response$", colnames(df), value = TRUE)
+  
+  # Apply transformation 100 - x to those columns
+  df[response_cols] <- lapply(df[response_cols], function(x) 100 - x)
+  
+  # Return the modified data frame
+  return(df)
+})
+# 'transformed_synergy_response_data' now contains the modified data frames
+
+saveRDS(trans.synergy.response.data, file = "viability_response_data.RData")
+```
+
+## Plotting
+
+### Load data
+```{r}
+# Load raw data for plotting organoid area
+# Define drugs
+drugs <- c("AZD8055", "Defactinib", "Gefitinib")
+# Create list object of drug data
+drug.dat <- list()
+for(i in drugs){
+  # Load AZD8055 from master sheet copy in the project directory, which includes synergy info (added retrospectively)
+  drug.dat[[i]] <- read.xlsx("Master_gSORG_Drugging_Template_AllReps.xlsx", paste0(i, "_R"))
+}
+```
+
+### Setup data
+```{r}
+# Cut down to just the drug data, excluding the dasatinib and DKO organoid data. Also convert response to percentage
+for(i in names(drug.dat)) {
+  drug.dat[[i]] <- drug.dat[[i]] %>%
+    filter(Drug == i | Drug == paste0("Dasatinib_", i)) %>%
+    filter(Genotype == "WT" | Genotype == "CDH1") %>%
+    mutate(DMSO_Normalised_Response_Mean = DMSO_Normalised_Response_Mean * 100)
+}
+```
+
+### Define some valuable plot parameters
+```{r}
+# Quickly define variables for plotting to match the size and font of an A4 thesis page
+A4.margin <- 2.54
+A4.width <- 21 - 2 * A4.margin
+A4.height <- 29.7 - 2 * A4.margin
+
+# theme_set(theme_minimal(base_size = 12))
+theme_set(theme_minimal(base_family = "serif"))
+axis.title.size <- 12
+axis.ticks.size <- 9
+plot.title.size <- 12
+```
+
+### Plot synergy
+```{r}
+synergy.plot.list <- list()
+
+# Plot each genotype
+for(i in names(drug.dat)) {
+  
+  # Filter to just the first replicate per condition (which contains the synergy info)
+  synergy.df <- drug.dat[[i]] %>%
+    filter(Biological_Replicate == 1) %>%
+    select(Genotype, Drug, Concentration_uM, Synergy, Synergy_SEM)
+  
+  # Get all genotypes present in this dataset
+  genotypes <- unique(synergy.df$Genotype)
+  
+  # Create a separate plot for each genotype
+  for (g in genotypes) {
+    df_subset <- synergy.df %>% filter(Genotype == g)
+    
+    plot.name <- paste0(i, "_", g)  # Create a unique name for this plot
+    
+    synergy.plot.list[[plot.name]] <- ggplot(df_subset, aes(x = Concentration_uM, y = Synergy, color = Drug)) +
+      geom_hline(yintercept = 0, col = "red", linetype = "longdash") +  # red dashed hline
+      geom_ribbon(aes(ymin = Synergy - Synergy_SEM,
+                      ymax = Synergy + Synergy_SEM),
+                  alpha = 0.2, colour = NA) +  # transparent SEM ribbon
+      geom_point(size = 1.3, colour = "grey50") +
+      geom_line(aes(group = Drug), color = "grey50") +  # grey lines for all drugs
+      # geom_errorbar(aes(ymin = Synergy - Synergy_SEM,
+      #                   ymax = Synergy + Synergy_SEM), colour = "grey50",
+      #               width = 0.05) +
+      ylim(-15, 20) +
+      ggtitle(ifelse(g == "WT", "Control", g)) +  # <- Add genotype title here
+      labs(
+        x = paste0(i, " concentration (μM)"),
+        y = "Loewe synergy score \u00B1 SEM"
+      ) +
+      theme(
+        plot.title = element_text(face = "bold", size = plot.title.size, hjust = 0.5),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(size = axis.ticks.size, colour = "black"),
+        axis.title.y = element_text(size = axis.title.size, colour = "black", margin = margin(r = 5)),
+        panel.grid.major = element_line(color = "grey85"),
+        panel.grid.minor = element_line(color = "grey85"),
+        plot.margin = margin(b = 5)
+      )
+  }
+}
+```
+
+```{r}
+synergy.plot.list <- list()
+
+# Plot each genotype
+for(i in names(drug.dat)) {
+  
+  # Filter to just the first replicate per condition (which contains the synergy info)
+  synergy.df <- drug.dat[[i]] %>%
+    filter(Biological_Replicate == 1) %>%
+    select(Genotype, Drug, Concentration_uM, Synergy, Synergy_SEM)
+  
+  # Get all genotypes present in this dataset
+  genotypes <- unique(synergy.df$Genotype)
+  
+  # Create a separate plot for each genotype
+  for (g in genotypes) {
+    df_subset <- synergy.df %>% filter(Genotype == g)
+    
+    plot.name <- paste0(i, "_", g)  # Create a unique name for this plot
+    
+    synergy.plot.list[[plot.name]] <- ggplot(df_subset, aes(x = Concentration_uM, y = Synergy)) +
+      geom_hline(yintercept = 0, col = "red", linetype = "longdash") +
+      geom_ribbon(aes(
+        ymin = Synergy - Synergy_SEM,
+        ymax = Synergy + Synergy_SEM,
+        group = Drug
+      ), fill = "grey50", alpha = 0.2) +
+      geom_point(aes(group = Drug), size = 1.3, colour = "grey50") +
+      geom_line(aes(group = Drug), colour = "grey50") +
+      ylim(-15, 20) +
+      ggtitle(
+        if (g == "WT") {
+          "Control"
+        } else if (g == "CDH1") {
+          bquote(bolditalic("Cdh1")^bolditalic("-/-"))
+        } else {
+          g
+        }
+      ) +
+      
+      labs(
+        x = paste0(i, " concentration (μM)"),
+        y = "Loewe synergy score \u00B1 SEM"
+      ) +
+      theme(
+        plot.title = element_text(face = "bold", size = plot.title.size, hjust = 0.5),
+        axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(size = axis.ticks.size, colour = "black"),
+        axis.title.y = element_text(size = axis.title.size, colour = "black", margin = margin(r = 5)),
+        panel.grid.major = element_line(color = "grey85"),
+        panel.grid.minor = element_line(color = "grey85"),
+        plot.margin = margin(b = 5)
+      )
+  }
+}
+
+```
+
+
+### Plot organoid area
+```{r}
+# Create summary list
+drug.dat.summary <- list()
+# Create plot list
+area.plot.list <- list()
+
+# Plot each genotype
+for(i in names(drug.dat)){
+  # Summarize data to calculate mean and SEM for each genotype, drug, and Concentration_uM combination
+  drug.dat.summary[[i]] <- drug.dat[[i]] %>%
+    group_by(Genotype, Drug, Concentration_uM) %>%
+    summarize(
+      Mean_Response_All_Reps = mean(DMSO_Normalised_Response_Mean),  # Calculate the mean response
+      SEM_All_Reps = sd(DMSO_Normalised_Response_Mean) / sqrt(n())   # Calculate the standard error of the mean (SEM)
+    ) %>%
+    ungroup()
+  
+  # Get all genotypes present in this dataset
+  genotypes <- unique(drug.dat.summary[[i]]$Genotype)
+  
+  # Create a separate plot for each genotype
+  for (g in genotypes) {
+    df_subset <- drug.dat.summary[[i]] %>%
+      filter(Genotype == g) %>%
+      mutate(Drug = ifelse(Drug == paste0("Dasatinib_", i), paste0("Dasatinib (0.25µM) + ", i), Drug))
+    
+    # Ensure "Dasatinib + <i>" comes first in the legend
+    df_subset$Drug <- factor(df_subset$Drug, levels = c(paste0("Dasatinib (0.25µM) + ", i), i))
+    
+    plot.name <- paste0(i, "_", g)  # Create a unique name for this plot
+    
+    # Define custom colors: current drug `i` = cyan, combo = darkblue
+    color_vals <- setNames(
+      object = c("darkblue", "cyan"),
+      nm = c(paste0("Dasatinib (0.25µM) + ", i), i)
+    )
+    
+    # Split the data by drug to control draw order
+    df_list <- split(df_subset, df_subset$Drug)
+    
+    # Create base plot
+    p <- ggplot() +
+      coord_cartesian(ylim = c(0, 100)) +
+      labs(
+        x = paste0(i, " concentration (μM)"),
+        y = "Relative organoid area \u00B1 SEM (%)",
+        title = NULL
+      ) +
+      theme(
+        text = element_text(colour = "black"),
+        axis.title.x = element_blank(),
+        legend.text = element_text(size = axis.ticks.size, colour = "black"),
+        legend.title = element_text(size = axis.title.size, colour = "black"),
+        panel.grid.major = element_line(color = "grey85"),
+        panel.grid.minor = element_line(color = "grey85"),
+        axis.text.y = element_text(size = axis.ticks.size, colour = "black"),
+        axis.title.y = element_text(size = axis.title.size, colour = "black", margin = margin(r = 5))
+      )
+    
+    # Add geoms grouped by Drug, in desired draw order
+    for (drug_name in levels(df_subset$Drug)) {
+      p <- p +
+        geom_line(data = df_list[[drug_name]], aes(x = Concentration_uM, y = Mean_Response_All_Reps, group = Drug, color = Drug)) +
+        geom_point(data = df_list[[drug_name]], aes(x = Concentration_uM, y = Mean_Response_All_Reps, color = Drug), size = 1.3) +
+        geom_ribbon(data = df_list[[drug_name]],
+                    aes(x = Concentration_uM,
+                        ymin = Mean_Response_All_Reps - SEM_All_Reps,
+                        ymax = Mean_Response_All_Reps + SEM_All_Reps,
+                        fill = Drug), alpha = 0.2)
+    }
+    
+    # Add manual color scale and fill color and legend title
+    p <- p + scale_color_manual(values = color_vals, name = "Treatment") + scale_fill_manual(values = color_vals, name = "Treatment")
+    
+    # Save to list
+    area.plot.list[[plot.name]] <- p
+  }
+}
+
+# Tidy up the environment
+rm(list = c("df_subset", "g", "i", "plot.name", "df_list", "drug_name", "color_vals"))
+
+```
+
+### Tile plots with cowplot::plot_grid
+* Need to add legends to CDH1 plots, and remove y axis labels and ticks from them
+* Need to somehow add a shared x axis label that covers both x axes
+```{r}
+# Create object to store combined plots
+combined.plot <- list()
+
+for(i in drugs){
+  # Define names of plots to call
+  panel.A <- synergy.plot.list[[paste0(i, "_WT")]] +
+    theme(legend.position = "none")
+  panel.B <- synergy.plot.list[[paste0(i, "_CDH1")]] + 
+    theme(legend.position = "none", axis.title.y = element_blank())
+  panel.C <- area.plot.list[[paste0(i, "_WT")]] + 
+    theme(legend.position = "none")
+  
+  # Extract legend from panel.D *before* removing it
+  legend.plot <- area.plot.list[[paste0(i, "_CDH1")]]
+  legend <- cowplot::get_legend(legend.plot + theme(legend.position = "bottom"))
+  
+  # Now remove legend from panel.D for plotting
+  panel.D <- legend.plot + 
+    theme(legend.position = "none", axis.title.y = element_blank())
+  
+  # Create the shared title with bold and size 12 font
+  shared.title <- ggdraw() + 
+    draw_label(
+      paste0("Dasatinib and ", i, " Synergy and Response in Gastric Organoids"),
+      size = 12, fontface = "bold", hjust = 0.5, fontfamily = "Times New Roman"
+    )
+  
+  # Combine the panels (A, B, C, D)
+  combined.panels <- plot_grid(
+    panel.A, panel.B, panel.C, panel.D,
+    rel_heights = c(1.0, 1.0, 1.0, 1.0),
+    nrow = 2, ncol = 2, axis = "tblr", align = "v", byrow = TRUE,
+    labels = c("A", "B", "C", "D"), label_size = plot.title.size
+  )
+  
+  # Add the shared title and x-axis label
+  combined.with.title <- plot_grid(
+    shared.title,
+    combined.panels,
+    ggdraw() + draw_label(
+      paste0(i, " concentration (µM)"),
+      size = axis.title.size,
+      hjust = 0.5,
+      fontfamily = "Times New Roman"
+    ),
+    ncol = 1,
+    rel_heights = c(0.1, 1, 0.03)  # Adjust heights accordingly for title and labels
+  )
+  
+  # Add legend at the bottom
+  combined.plot[[i]] <- plot_grid(
+    combined.with.title,
+    legend,
+    ncol = 1,
+    rel_heights = c(1, 0.08)  # Adjust height of legend as needed
+  )
+  
+  # Set background to white and save
+  combined.plot[[i]] <- combined.plot[[i]] +
+    theme(plot.background = element_rect(fill = "white", color = NA))
+  
+  # Save the plot
+  ggsave(paste0("Thesis_Plots/", i, ".png"),
+         plot = combined.plot[[i]],
+         width = A4.width, height = 20, units = "cm", dpi = 600)
+  
+  print(combined.plot[[i]])
+}
+
+# Tidy up the environment
+rm(list = c("panel.A", "panel.B", "panel.C", "panel.D",
+            "legend", "legend.plot", "shared.title",
+            "combined.with.title"))
+```
+
+# Drug interaction models
+## Run interaction models where intercept is CDH1 and combination therapy - better for interpreting effects of individual elements
+## This version is saved.
+```{r}
+# Create empty lists to store model summaries
+summary_3way <- list()
+summary_2way <- list()
+
+# Loop through each element of the drug.dat list
+for(i in names(drug.dat)) {
+  # New filtering and renaming
+  drug.subset <- drug.dat[[i]] %>%
+    mutate(
+      Genotype = case_when(
+        Genotype == "WT" ~ "B_Control",
+        Genotype == "CDH1" ~ "A_CDH1",
+        Genotype == "DKO" ~ "C_DKO"),
+      Drug = case_when(
+        Drug == i ~ paste0("B_", i),
+        Drug == paste0("Dasatinib_", i) ~ paste0("A_Dasatinib_", i)
+      )
+    ) %>%
+    filter(
+      Drug %in% c(paste0("B_", i), paste0("A_Dasatinib_", i)),
+      Genotype %in% c("B_Control", "A_CDH1")
+    )
+  
+  # Plot data for each drug
+  drug.subset %>% ggplot(., aes(x = Concentration_uM, 
+                                y = DMSO_Normalised_Response_Mean, col = Drug)) +
+    geom_jitter(width = 0.1, size = 2) + 
+    facet_wrap(~Genotype) + 
+    ggtitle(paste("Plot for", i))  # Add a title with the drug name
+  
+  # Fit three-way interaction model for each drug
+  fit_3way_intn = lm(DMSO_Normalised_Response_Mean ~ Drug * Genotype * Concentration_uM, 
+                     data = drug.subset)
+  
+  # Test residuals for normality formally
+  print(paste("Shapiro Test for residuals (3-way interaction) for", i))
+  print(shapiro.test(fit_3way_intn$residuals))
+  
+  # Plot residuals to check for normality visually
+  hist(fit_3way_intn$residuals, main = paste("Residuals Histogram (3-way interaction)", i), 
+       xlab = "Residuals", col = "gray")
+  
+  # Diagnostic plots for the 3-way interaction model
+  par(mfrow = c(1, 2))
+  plot(fit_3way_intn, 1)
+  plot(fit_3way_intn, 2)
+  
+  # Summary of model for the 3-way interaction
+  print(paste("Summary for 3-way interaction model for", i))
+  print(summary(fit_3way_intn))
+  
+  # Save the coefficients summary for the 3-way interaction model in the list
+  summary_3way[[i]] <- summary(fit_3way_intn)$coefficients
+  
+  # Fit two-way interaction model for each drug
+  fit_partial_intn = lm(DMSO_Normalised_Response_Mean ~ Drug * Genotype + Concentration_uM, 
+                        data = drug.subset)
+  
+  # Test residuals for normality formally
+  print(paste("Shapiro Test for residuals (2-way interaction) for", i))
+  print(shapiro.test(fit_partial_intn$residuals))
+  
+  # Plot residuals to check for normality visually
+  hist(fit_partial_intn$residuals, main = paste("Residuals Histogram (2-way interaction)", i), 
+       xlab = "Residuals", col = "gray")
+  
+  # Diagnostic plots for the 2-way interaction model
+  par(mfrow = c(1, 2))
+  plot(fit_partial_intn, 1)
+  plot(fit_partial_intn, 2)
+  
+  # Summary of model for the 2-way interaction
+  print(paste("Summary for 2-way interaction model for", i))
+  print(summary(fit_partial_intn))
+  
+  # Save the coefficients summary for the 2-way interaction model in the list
+  summary_2way[[i]] <- summary(fit_partial_intn)$coefficients
+}
+
+# Reset graphical parameters
+par(mfrow = c(1, 1))
+
+# Now, `summary_3way` contains the coefficients summaries for the 3-way models for all drugs
+# And `summary_2way` contains the coefficients summaries for the 2-way models for all drugs
+
+View(summary_2way[["AZD8055"]])
+View(summary_2way[["Defactinib"]])
+View(summary_2way[["Gefitinib"]])
+
+
+# Create a new workbook
+wb <- createWorkbook()
+# Save as individual csv's and an excel workbook
+for(i in names(summary_2way)){
+  write.csv(summary_2way[[i]], file = paste0("Interactions/", i, "_2Way.csv"))
+  # Add a new worksheet for each drug
+  addWorksheet(wb, sheetName = i)
+  # Write the corresponding summary table to the worksheet
+  writeData(wb, sheet = i, summary_2way[[i]], rowNames = T)
+}
+# Save the workbook to a file
+saveWorkbook(wb, "Interactions/summary_2way_interactions.xlsx", overwrite = T)
+
+# Tidy up the environment
+rm(list = c("wb"))
+```
+
+## Run interaction models where intercept is CDH1 and combination therapy - better for interpreting effects of individual elements
+## This version is saved.
+```{r}
+# Create empty lists to store model summaries
+summary_3way <- list()
+summary_2way <- list()
+
+# Loop through each element of the drug.dat list
+for(i in names(drug.dat)) {
+  # New filtering and renaming
+  drug.subset <- drug.dat[[i]] %>%
+    mutate(
+      Genotype = case_when(
+        Genotype == "WT" ~ "A_Control",
+        Genotype == "CDH1" ~ "B_CDH1",
+        Genotype == "DKO" ~ "C_DKO"),
+      Drug = case_when(
+        Drug == i ~ paste0("A_", i),
+        Drug == paste0("Dasatinib_", i) ~ paste0("B_Dasatinib_", i)
+      )
+    ) %>%
+    filter(
+      Drug %in% c(paste0("A_", i), paste0("B_Dasatinib_", i)),
+      Genotype %in% c("A_Control", "B_CDH1")
+    )
+  
+  # Plot data for each drug
+  drug.subset %>% ggplot(., aes(x = Concentration_uM, 
+                                y = DMSO_Normalised_Response_Mean, col = Drug)) +
+    geom_jitter(width = 0.1, size = 2) + 
+    facet_wrap(~Genotype) + 
+    ggtitle(paste("Plot for", i))  # Add a title with the drug name
+  
+  # Fit three-way interaction model for each drug
+  fit_3way_intn = lm(DMSO_Normalised_Response_Mean ~ Drug * Genotype * Concentration_uM, 
+                     data = drug.subset)
+  
+  # Test residuals for normality formally
+  print(paste("Shapiro Test for residuals (3-way interaction) for", i))
+  print(shapiro.test(fit_3way_intn$residuals))
+  
+  # Plot residuals to check for normality visually
+  hist(fit_3way_intn$residuals, main = paste("Residuals Histogram (3-way interaction)", i), 
+       xlab = "Residuals", col = "gray")
+  
+  # Diagnostic plots for the 3-way interaction model
+  par(mfrow = c(1, 2))
+  plot(fit_3way_intn, 1)
+  plot(fit_3way_intn, 2)
+  
+  # Summary of model for the 3-way interaction
+  print(paste("Summary for 3-way interaction model for", i))
+  print(summary(fit_3way_intn))
+  
+  # Save the coefficients summary for the 3-way interaction model in the list
+  summary_3way[[i]] <- summary(fit_3way_intn)$coefficients
+  
+  # Fit two-way interaction model for each drug
+  fit_partial_intn = lm(DMSO_Normalised_Response_Mean ~ Drug * Genotype + Concentration_uM, 
+                        data = drug.subset)
+  
+  # Test residuals for normality formally
+  print(paste("Shapiro Test for residuals (2-way interaction) for", i))
+  print(shapiro.test(fit_partial_intn$residuals))
+  
+  # Plot residuals to check for normality visually
+  hist(fit_partial_intn$residuals, main = paste("Residuals Histogram (2-way interaction)", i), 
+       xlab = "Residuals", col = "gray")
+  
+  # Diagnostic plots for the 2-way interaction model
+  par(mfrow = c(1, 2))
+  plot(fit_partial_intn, 1)
+  plot(fit_partial_intn, 2)
+  
+  # Summary of model for the 2-way interaction
+  print(paste("Summary for 2-way interaction model for", i))
+  print(summary(fit_partial_intn))
+  
+  # Save the coefficients summary for the 2-way interaction model in the list
+  summary_2way[[i]] <- summary(fit_partial_intn)$coefficients
+}
+
+# Reset graphical parameters
+par(mfrow = c(1, 1))
+
+# Now, `summary_3way` contains the coefficients summaries for the 3-way models for all drugs
+# And `summary_2way` contains the coefficients summaries for the 2-way models for all drugs
+
+View(summary_2way[["AZD8055"]])
+View(summary_2way[["Defactinib"]])
+View(summary_2way[["Gefitinib"]])
+
+
+# Create a new workbook
+wb <- createWorkbook()
+# Save as individual csv's and an excel workbook
+for(i in names(summary_2way)){
+  write.csv(summary_2way[[i]], file = paste0("Interactions/", i, "_2Way_B.csv"))
+  # Add a new worksheet for each drug
+  addWorksheet(wb, sheetName = i)
+  # Write the corresponding summary table to the worksheet
+  writeData(wb, sheet = i, summary_2way[[i]], rowNames = T)
+}
+# Save the workbook to a file
+saveWorkbook(wb, "Interactions/summary_2way_interactions_B.xlsx", overwrite = T)
+
+# Tidy up the environment
+rm(list = c("wb"))
+```
+
+### Interpretation of three-way model
+* DrugDefactinib: overall, there is a significant difference between the two drugs (across genotype and concentrarion level) in terms of their effect on organoid area (positive coefficient means oganoid area higher for Defactinib compared to Dasatinib_Defactinib).
+* Concentration_uM: there is a significant negative association between concentration and organoid area (across genotype and drug type) - as concentration increases, organoid area decreases.
+* DrugDefactinib:GenotypeWT: there is a significant interaction between drug type and genotype in terms of organoid area - i.e., the difference between Defactinib and Dasatinib_Defactinib is dependent on genotype: this manifests as the organoid area being higher for Defactinib samples (relariev to Dasatinib_Defactinib) in the CDH1 genotype.

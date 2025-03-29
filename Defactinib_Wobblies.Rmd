@@ -1,0 +1,51 @@
+---
+title: "Defactinib_Wobblies"
+author: "Kieran Redpath"
+date: "2024-09-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Load packages
+library(tidyverse)
+library(openxlsx)
+library(ggsignif)
+```
+
+# Load data
+```{r}
+Wobbly.dat <- read.xlsx("Master_gSORG_Drugging_Template_AllReps.xlsx", "Defactinib_Wobblies")
+```
+
+# Plot boxplot per genotype with t.tests between each DEF and DAS/DEF at each dose, and between each dose of DEF and controls
+```{r}
+# Ensure the Genotype column is a factor with levels ordered as "WT", "CDH1", "DKO"
+Wobbly.dat$Genotype <- factor(Wobbly.dat$Genotype, levels = c("WT", "CDH1", "DKO"))
+
+# Make a list of the comparisons you want, by their x-axis value
+signif.comps <- list(c("DMSO.0", "DAS.0.25"), c("DAS/DEF.0.5", "DEF.0.5"), c("DAS/DEF.1", "DEF.1"), c("DAS/DEF.2", "DEF.2"), c("DMSO.0", "DEF.0.5"), c("DMSO.0", "DEF.1"), c("DMSO.0", "DEF.2"))
+
+# Plot the boxplot with consistent y-axis and ordered Genotypes
+wobbly.plot <- ggplot(Wobbly.dat, aes(x = interaction(Treatment, Dose), y = `Wobbly/Total`, fill = Treatment)) +
+  geom_boxplot() +
+  geom_point() +
+  facet_wrap(~ Genotype, nrow = 1) +  # Create separate plots for each Genotype, in a single row
+  ylim(0, 0.25) +  # Set the y-axis limits to be consistent across all plots
+  scale_fill_brewer(palette = "Set3") +   # Optional color palette
+  labs(x = "Group (Treatment, Dose)", y = "Wobbly/Total", 
+       title = "Boxplot of Wobbly/Total by Group and Genotype") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + # Rotate x-axis labels for better readability 
+  
+  # Add significance markers using ggsignif
+  geom_signif(comparisons = signif.comps, 
+              map_signif_level = TRUE,
+              test = "t.test",  # You can change this to another test if needed
+              step_increase = 0.08)  # Space out the significance bars
+ggsave("wobbly.plot.png" , plot = wobbly.plot, width = 2500, height = 1800, units = "px", scale = 0.8)
+```
+
+

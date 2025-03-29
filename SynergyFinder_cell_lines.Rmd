@@ -1,0 +1,362 @@
+---
+title: "Calculating Drug Synergy Combinations with Replicates"
+author: "Kieran Redpath"
+date: "`r format(Sys.Date(), '%d %B, %Y')`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load packages
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(openxlsx)
+library(synergyfinder)
+library(cowplot)
+```
+
+## Input
+
+* Edit this chunk to define the names of variables, including:
+* File in read.table should be the name of the file containing your data, which should be moved into this folder
+* synergy.type should be your desired synergy calculation
+* data.type should be how your data is expressed
+```{r}
+# Load combination data for any number of correctly indexed drug combinations (see the template file for what this should look like).
+# replace filename with a .xlsx file containing your data in the right format
+synergy.frame <- read.csv("16_Drugs_Viability_Averages_cell_lines.csv")
+synergy.frame <- na.omit(synergy.frame)
+
+# Define which type of synergy score you want to use ("HSA", "Loewe", "Bliss", or "ZIP")
+synergy.type = "Loewe"
+
+# Define if your data is expressed as "inhibition" or "viability". Either way it should be as a percentage, not a decimal (i.e. out of 100, not 1)
+data.type = "viability"
+```
+
+### Optionally rename some drugs with aliases in this data frame, for the entire rest of the analysis
+```{r}
+synergy.frame <- synergy.frame %>%
+  mutate(drug_col = case_when(
+    drug_col == "AZD3759" ~ "Zorifertinib",
+    TRUE ~ drug_col  # Keep other values unchanged
+  ))
+```
+
+### Process data
+```{r, warning = F, include = F}
+# Set the random seed so results are reproducible
+set.seed(42)
+
+# Process the synergy data (check that data.type is correct for your data, accepts "inhibition" or "viability")
+dose.response.mat <- ReshapeData(synergy.frame,
+                                 data_type = data.type,
+                                 impute = T,
+                                 noise = F,
+                                 iteration = 100
+)
+```
+
+### Calculate and visualise synergy scores across the inferred dose-response matrix
+* Also saves these as .png's if required
+```{r, warning = F}
+# Calculate synergy scores
+synergy.score <- CalculateSynergy(data = dose.response.mat,
+                                  method = synergy.type,
+                                  iteration = 100)
+```
+
+### Extract data
+* This chunk of code extracts useful values from the data for visualization and plotting, for only the tested concentrations of each drug
+* Data for each combo is saved in a different element of the list "synergy.response.data"
+* By default the code won't be included in the output document because it's very long and complicated
+```{r, include = F, echo = F}
+# Create an empty list to enter data into
+synergy.response.data <- list()
+# Extract rows of values you've actually tested in the lab: removing the imputed values where n = 1
+# First extract response information (calculated mean from replicates and other statistics)
+tmp <- synergy.score[["response_statistics"]][which(synergy.score[["response_statistics"]]$n > 1),]
+# Remove NAs - not sure if this line is necessary (or it might break stuff)
+tmp <- na.omit(synergy.score[["response_statistics"]])
+# Combine this with synergy scores (calculated mean and other statistics)
+tmp <- merge(tmp, synergy.score[["synergy_scores_statistics"]],
+             by = c("block_id", "conc1", "conc2"),
+             sort = F)
+
+# Add all of these values into a list that contains each combination/blocks data as a separate element
+for(x in unique(tmp$block_id)){
+  # Define the drug combination for this block
+  block = synergy.score[["drug_pairs"]]$block_id[x]
+  drug1 = synergy.score[["drug_pairs"]]$drug1[x]
+  drug2 = synergy.score[["drug_pairs"]]$drug2[x]
+  synergy.response.data[[x]] <- tmp[tmp$block_id == x,]
+  
+  # Move single drug response data into new columns
+  # Create new columns for response and sem for drug 1
+  synergy.response.data[[x]][, paste0(drug1, "_response")] <- NA
+  synergy.response.data[[x]][, paste0(drug1, "_sem")] <- NA
+  # Create new columns for response and sem for drug 2
+  synergy.response.data[[x]][, paste0(drug2, "_response")] <- NA
+  synergy.response.data[[x]][, paste0(drug2, "_sem")] <- NA
+  
+  # Move response values for drug 1 into a new column for readability
+  # Define the value of y and remove 0's
+  y <- unique(synergy.response.data[[x]]$conc1)
+  y <- y[! y %in% "0"]
+  # Move values from "response" to "drug1_response" based on conditions
+  for(z in 1:length(y)){
+    synergy.response.data[[x]][, paste0(drug1, "_response")][synergy.response.data[[x]]$conc1 == y[z]] <- synergy.response.data[[x]]$response_mean[synergy.response.data[[x]]$conc1 == y[z] & synergy.response.data[[x]]$conc2 == 0]
+  }
+  # Do the same for "response_sem"
+  for(z in 1:length(y)){
+    synergy.response.data[[x]][, paste0(drug1, "_sem")][synergy.response.data[[x]]$conc1 == y[z]] <- synergy.response.data[[x]]$response_sem[synergy.response.data[[x]]$conc1 == y[z] & synergy.response.data[[x]]$conc2 == 0]
+  }
+  
+  # Move response values for drug 2 into a new column for readability
+  # Define the value of y and remove 0's
+  y <- unique(synergy.response.data[[x]]$conc2)
+  y <- y[! y %in% "0"]
+  # Move values from "response" to "drug2_response" based on conditions
+  for(z in 1:length(y)){
+    synergy.response.data[[x]][, paste0(drug2, "_response")][synergy.response.data[[x]]$conc2 == y[z]] <- synergy.response.data[[x]]$response_mean[synergy.response.data[[x]]$conc2 == y[z] & synergy.response.data[[x]]$conc1 == 0]
+  }
+  # Do the same for "response_sem"
+  for(z in 1:length(y)){
+    synergy.response.data[[x]][, paste0(drug2, "_sem")][synergy.response.data[[x]]$conc2 == y[z]] <- synergy.response.data[[x]]$response_sem[synergy.response.data[[x]]$conc2 == y[z] & synergy.response.data[[x]]$conc1 == 0]
+  }
+  
+  # Remove extra rows
+  synergy.response.data[[x]] <- synergy.response.data[[x]][!synergy.response.data[[x]]$conc1 == 0, ]
+  synergy.response.data[[x]] <- synergy.response.data[[x]][!synergy.response.data[[x]]$conc2 == 0, ]
+  
+  # Define which columns you want to keep - currently this is designed for simplicity and only includes standard error of the mean (but this should probably actually be standard deviation)
+  keep.columns <- c("conc1", "conc2",
+                    paste0(drug1, "_response"), paste0(drug1, "_sem"),
+                    paste0(drug2, "_response"), paste0(drug2, "_sem"),
+                    "response_mean", "response_sem",
+                    paste0(synergy.type, "_synergy_mean"), paste0(synergy.type, "_synergy_sem"))
+  synergy.response.data[[x]] <- synergy.response.data[[x]][, keep.columns]
+  
+  # Rename rows for readability and plotting
+  combo.names <- paste0(drug1, "_",
+                        synergy.response.data[[x]]$conc1, dose.response.mat[["drug_pairs"]][["conc_unit1"]][x],
+                        "_X_", drug2, "_",
+                        synergy.response.data[[x]]$conc2, dose.response.mat[["drug_pairs"]][["conc_unit2"]][x])
+  rownames(synergy.response.data[[x]]) <- combo.names
+  # Rename some columns for readability and plotting
+  synergy.response.data[[x]] <- synergy.response.data[[x]] %>% rename(
+    !!paste0(drug1, "_conc") := "conc1",
+    !!paste0(drug2, "_conc") := "conc2",
+    "Combo_response" = "response_mean",
+    "Combo_sem" = "response_sem")
+  # Rename each list element
+  names(synergy.response.data)[x] <- paste0(synergy.type, "_block", "_", x, "_", drug1, "_X_", drug2)
+}
+# Print or do further processing with new_data
+
+# Clean up environment
+rm("tmp","block", "drug1", "drug2", "combo.names", "keep.columns", "x", "y", "z")
+```
+
+### Save Data
+* This chunk of code saves excel files of the output for each drug combination, and a multi-tab workbook of all drugs together
+```{r}
+wb <- createWorkbook(title = "Synergy_Response_Data_cell_lines")
+for(y in 1:length(synergy.response.data)){
+  # Workbook
+  prefix <- paste0(synergy.type, "_block_.*_Dasatinib_X_")
+  sheet.name <- gsub(prefix, "", names(synergy.response.data)[y])
+  addWorksheet(wb, sheetName = sheet.name)
+  writeData(wb, sheet = sheet.name, synergy.response.data[[y]])
+}
+saveWorkbook(wb, file = paste0(synergy.type, "_", "Synergy_Response_Data_cell_lines.xlsx"), overwrite = T)
+
+# Clean up environment
+rm("y", "wb", "prefix")
+```
+
+## Plot Synergy, Inhibition, and Viability (on a log2 Scale)
+### Transform the synergy.response.data from SynergyFinder.Rmd back to viability (it's been treated converted to inhibition, we want it back to how we put it in)
+* To do this, to every column in the list that ends in _response, apply 100-x
+```{r}
+# Apply the transformation to all data frames in the list
+trans.synergy.response.data <- lapply(synergy.response.data, function(df) {
+  # Identify columns ending in '_response'
+  response_cols <- grep("_response$", colnames(df), value = TRUE)
+  
+  # Apply transformation 100 - x to those columns
+  df[response_cols] <- lapply(df[response_cols], function(x) 100 - x)
+  
+  # Return the modified data frame
+  return(df)
+})
+# 'trans.synergy.response.data' now contains the modified data frames
+```
+
+### Plot synergy and viability
+```{r}
+# Create a vector for plotting minor axis ticks
+minor.ticks <- list()
+for(n in 1:7){
+  minor.ticks[[n]] <- c(n+0.5, n+0.75, n+0.875)
+}
+minor.ticks <- unlist(minor.ticks)
+
+# Quickly define variables for plotting to match the size and font of an A4 page with standard margins
+A4.margin <- 2.54
+A4.width <- 21 - 2 * A4.margin
+A4.height <- 29.7 - 2 * A4.margin
+
+theme_set(theme_minimal(base_family = "serif"))
+axis.title.size <- 12
+axis.ticks.size <- 9
+plot.title.size <- 12
+
+for(i in 1:length(trans.synergy.response.data)){
+  # Specify current drugs
+  # Hard-coded columns 1 and 2
+  drug1 <- gsub("_conc", "", colnames(trans.synergy.response.data[[i]])[1])
+  drug2 <- gsub("_conc", "", colnames(trans.synergy.response.data[[i]])[2])
+  
+  # For Viability Plot
+  # Set up dataframe of relevant data for viability plot
+  v.df <- as.data.frame(trans.synergy.response.data[[i]])[,1:8]
+  v.df <- v.df %>% mutate_if(is.numeric, round, digits = 3) 
+  v.df$dose <- rownames(v.df)
+  v.df$data_order <- seq(1, nrow(v.df))
+  v.df$exp_order <- 2^(1:nrow(v.df))
+  
+  # For Synergy Plot
+  # Set up dataframe of relevant data for synergy plot
+  s.df <- as.data.frame(trans.synergy.response.data[[i]])[,9:10]
+  s.df <- s.df %>% mutate_if(is.numeric, round, digits = 3) 
+  s.df$dose <- rownames(s.df)
+  s.df$data_order <- seq(1, nrow(s.df))
+
+  # For viability plot
+  labels <- c()
+  for(j in 1:nrow(v.df)){
+    labels[j] <- paste0(v.df[j,2])
+  }
+  v.df$labels <- labels
+  
+  # For synergy plot
+  labels  <- c()
+  for(j in 1:nrow(v.df)){
+    labels[j] <- paste0(v.df[j,1])
+  }
+  s.df$labels <- labels
+  
+  # Plot Synergy
+  synergy.plot <- ggplot(data = s.df, mapping = aes(x = v.df$data_order, y = s.df[,paste0(synergy.type, "_synergy_mean")])) +
+    geom_blank(data = s.df, mapping = aes(x = v.df$data_order, y = s.df[,paste0(synergy.type, "_synergy_mean")])) +
+    geom_hline(yintercept = 0, col = "red", linetype = "longdash") +
+    geom_point(mapping = aes(x = v.df$data_order, y = s.df[, paste0(synergy.type, "_synergy_mean")]), size = 1.3, colour = "grey50") +
+    geom_line(mapping = aes(x = v.df$data_order, y = s.df[, paste0(synergy.type, "_synergy_mean")]), group = 1, colour = "grey50") +
+    geom_ribbon(aes(ymin = s.df[, paste0(synergy.type, "_synergy_mean")] - s.df[, paste0(synergy.type, "_synergy_sem")],
+                    ymax = s.df[, paste0(synergy.type, "_synergy_mean")] + s.df[, paste0(synergy.type, "_synergy_sem")]),
+                fill = "grey50", alpha = 0.2) +
+    coord_cartesian(ylim = c(-30, 20)) +
+    scale_x_continuous(breaks = v.df$data_order, minor_breaks = minor.ticks, expand = expansion(add = 0.25)) +
+    theme(title = element_text(size = plot.title.size, margin = margin(t = 30)),
+          axis.text.x = element_blank(), axis.title.x = element_blank(), plot.title = element_text(hjust = 0.5, colour = "black", face = "bold", size = plot.title.size), axis.text.y = element_text(size = axis.ticks.size, colour = "black"), axis.title.y = element_text(size = axis.title.size, colour = "black", margin = margin(r = 5)), panel.grid.major = element_line(color = "grey85"), panel.grid.minor = element_line(color = "grey85"),
+          plot.margin = margin(b = 5)) +
+    ylab(paste0(synergy.type, " synergy score ± SEM")) +
+    ggtitle(paste0(drug1, " and ", drug2, " Synergy and Viability in NCI-N87"))
+  
+  # Plot Viability
+  viability.plot <- ggplot(data = v.df) +
+    
+    # Plot lines, points, and ribbons
+    
+    # For combination
+    geom_line(mapping = aes(x = v.df$data_order, y = Combo_response, group = 1, colour = paste0(drug1, " + ", drug2))) +
+    geom_point(mapping = aes(x = v.df$data_order, y = Combo_response, group = 1, colour = paste0(drug1, " + ", drug2)),
+               size = 1.3) +
+    geom_ribbon(mapping = aes(x = v.df$data_order, ymin = Combo_response - Combo_sem, ymax = Combo_response + Combo_sem, fill = paste0(drug1, " + ", drug2)), alpha = 0.2) +
+    
+    # For drug 1
+    geom_line(mapping = aes(x = v.df$data_order, y = v.df[, paste0(drug1, "_response")], group = 1, colour = drug1)) +
+    geom_point(mapping = aes(x = v.df$data_order, y = v.df[, paste0(drug1, "_response")], group = 1, colour = drug1), size = 1.3) +
+    geom_ribbon(mapping = aes(x = v.df$data_order, ymin = v.df[, paste0(drug1, "_response")] - v.df[, paste0(drug1, "_sem")], ymax = v.df[, paste0(drug1, "_response")] + v.df[, paste0(drug1, "_sem")],  fill = drug1), alpha = 0.2) +
+    
+    # For drug 2
+    geom_line(mapping = aes(x = v.df$data_order, y = v.df[, paste0(drug2, "_response")], group = 1, colour = drug2)) +
+    geom_point(mapping = aes(x = v.df$data_order, y = v.df[, paste0(drug2, "_response")], group = 1, colour = drug2), size = 1.3) +
+    geom_ribbon(mapping = aes(x = v.df$data_order,  ymin = v.df[, paste0(drug2, "_response")] - v.df[, paste0(drug2, "_sem")], ymax = v.df[, paste0(drug2, "_response")] + v.df[, paste0(drug2, "_sem")], fill = drug2), alpha = 0.2) +
+    
+    # Set colours
+    scale_color_manual(name = "Treatment", values = c("darkblue", "black", "cyan"), limits = c(paste0(drug1, " + ", drug2), drug1, drug2)) +
+    scale_fill_manual(name = "Treatment", values = c("darkblue", "black", "cyan"), limits = c(paste0(drug1, " + ", drug2), drug1, drug2)) +   
+    
+    # Provide titles and aesthetic parameters
+    coord_cartesian(ylim=c(0, 120)) +
+    scale_x_continuous(breaks = v.df$data_order, minor_breaks = minor.ticks, expand = expansion(add = 0.25)) +
+    theme(text = element_text(colour = "black"), axis.text.x = element_blank(), axis.title.x = element_blank(),
+          legend.text = element_text(size = axis.ticks.size, colour = "black"), legend.title = element_text(size = axis.title.size, colour = "black"), panel.grid.major = element_line(color = "grey85"), panel.grid.minor = element_line(color = "grey85"),
+          # legend.position = c(0.95, 0.3),
+          axis.text.y = element_text(size = axis.ticks.size, colour = "black"), axis.title.y = element_text(size = axis.title.size, colour = "black", margin = margin(r = 5))) +
+    ylab("Relative cell viability ± SEM (%)")
+  
+  # Label plot
+  # All drugs are in µM apart from metformin, which is in mM
+  if(drug2 == "Metformin"){
+    druglabs <- c(rep(paste0(drug1, " (µM)"), nrow(s.df)), rep(paste0(drug2, " (mM)"), nrow(v.df)))
+  } else{
+    druglabs <- c(rep(paste0(drug1, " (µM)"), nrow(s.df)), rep(paste0(drug2, " (µM)"), nrow(v.df)))
+  }
+  # Create a table of labels
+  label.table <- data.frame(
+    exp_order = v.df$data_order,
+    labels = c(s.df$labels, v.df$labels),
+    drug = druglabs 
+  )
+  
+  # Reorder the rows so that drug2 is always on top
+  drug2_label <- ifelse(drug2 == "Metformin", paste0(drug2, " (mM)"), paste0(drug2, " (µM)"))
+  drug1_label <- paste0(drug1, " (µM)")
+  
+  # Reorder the data frame based on the drug column
+  label.table <- label.table %>%
+    arrange(factor(drug, levels = c(drug2_label, drug1_label)))
+  
+  # Convert the drug column to a factor with specified levels to enforce order in the plot
+  label.table$drug <- factor(label.table$drug, levels = c(drug2_label, drug1_label))
+  
+  table.plot <- ggplot(label.table, aes(x = exp_order, y = drug)) +
+    geom_text(aes(label = labels), size = axis.ticks.size/.pt, family = "serif") +
+    theme_void() +
+    theme(axis.text.y = element_text(size = axis.ticks.size, colour = "black", margin = margin(r = 10)), axis.title.x = element_blank(), text = element_text(family = "serif")) +
+    coord_cartesian(clip = "off") +
+    scale_x_continuous(expand = expansion(add = 0.25))
+  
+  # Extract and remove legends
+  viability.plot.with.legend <- viability.plot + theme(legend.position = "bottom")
+  shared.legend <- cowplot::get_legend(viability.plot.with.legend)
+  viability.plot <- viability.plot + theme(legend.position = "none")
+  synergy.plot <- synergy.plot + theme(legend.position = "none")
+  # Put them together
+  combined.plot <- plot_grid(
+    plot_grid(synergy.plot, viability.plot, table.plot,
+              rel_heights = c(1.0, 1.4, 0.3), ncol = 1,
+              axis = "lr", align = "v", byrow = TRUE,
+              labels = c("A", "B", ""), label_size = plot.title.size),
+    shared.legend,
+    ncol = 1,
+    rel_heights = c(1, 0.1)  # Adjust height of legend row if needed
+  )
+  
+  ggsave(paste0("Synergy_Viability_Plots_cell_lines/", names(trans.synergy.response.data[i]), ".png"), plot = combined.plot, width = A4.width, height = A4.width, units = "cm", dpi = 600)
+  print(combined.plot)
+}
+
+# Clean up the environment
+rm(list = c("A4.height", "A4.margin", "A4.width",
+            "axis.ticks.size", "axis.title.size", "plot.title.size", "minor.ticks",
+            "i", "j", "n",
+            "drug1", "drug2", "druglabs", "labels",
+            "s.df", "v.df", "label.table",
+            "synergy.plot", "viability.plot", "table.plot", "combined.plot"))
+```

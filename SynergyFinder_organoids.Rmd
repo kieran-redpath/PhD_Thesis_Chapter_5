@@ -9,33 +9,6 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## Instructions
-* You can run code from a .Rmd document using "Ctrl + Enter" ("Cmd + Return" on mac) on the line or a highlighted block of text. Click the arrow in the top right corner of a chunk to run the entire chunk.
-* Ensure all packages are correctly installed (see "Required packages").
-* Substitute the default values under the heading "Input" with your desired values.
-* Click the "Knit" button at the top of your RStudio window.
-
-### Required packages
-* Only run this chunk of code the first time you use synergyfinder on your computer, but first make sure you delete a single # from the start of each line.
-* By default this code won't be included in the output document.
-```{r, include = F, echo = F}
-## Run these lines if the relevant package is not installed (remove the "#" first though)
-
-## dplyr and ggplot2
-# install.packages(c("dplyr", "ggplot2"))
-
-## gridExtra
-# install.packages("gridExtra")
-
-## openxlsx
-# install.packages("openxlsx", dependencies = TRUE)
-
-## synergyfinder
-# if (!requireNamespace("BiocManager", quietly = TRUE))
-#     install.packages("BiocManager")
-# BiocManager::install("synergyfinder")
-```
-
 ### Load packages and data
 ```{r, message = F}
 # Load packages
@@ -56,7 +29,7 @@ library(cowplot)
 ```{r}
 # Load combination data for any number of correctly indexed drug combinations (see the template file for what this should look like).
 # replace filename with a .xlsx file containing your data in the right format
-synergy.frame <- read.xlsx("SynergyFinderData.xlsx")
+synergy.frame <- read.xlsx("SynergyFinderData_organoids.xlsx")
 synergy.frame <- na.omit(synergy.frame)
 
 # Define which type of synergy score you want to use ("HSA", "Loewe", "Bliss", or "ZIP")
@@ -80,13 +53,6 @@ dose.response.mat <- ReshapeData(synergy.frame,
 )
 ```
 
-### Plot dose response curves
-* Also saves these as .png's
-```{r, warning = F}
-# Plots curves within RStudio and the generated markdown document, but also saves a png in the current working directory
-# PlotDoseResponse(dose.response.mat, block_ids = dose.response.mat[["drug_pairs"]][["block_id"]], save_file = TRUE,  summary_statistic = NULL, file_type = "png")
-```
-
 ### Calculate and visualise synergy scores across the inferred dose-response matrix
 * Also saves these as .png's
 ```{r, warning = F}
@@ -94,10 +60,6 @@ dose.response.mat <- ReshapeData(synergy.frame,
 synergy.score <- CalculateSynergy(data = dose.response.mat,
                                   method = synergy.type,
                                   iteration = 100)
-
-# Visualise synergy scores, providing an average value and a visual indication of where synergy is high and low
-# Plots scores within RStudio and the generated markdown document, but also saves a png in the current working directory
-# PlotSynergy(synergy.score, type = "2D", method = synergy.type, block_ids = dose.response.mat[["drug_pairs"]][["block_id"]], summary_statistic = NULL, save_file = TRUE, file_type = "png")
 ```
 
 ### Extract data
@@ -195,10 +157,8 @@ rm("tmp","block", "drug1", "drug2", "combo.names", "keep.columns", "x", "y", "z"
 ### Save Data
 * This chunk of code saves a single excel workbook, with a tab for each drug combination
 ```{r}
-wb <- createWorkbook(title = "Synergy_Response_Data")
+wb <- createWorkbook(title = "Synergy_Response_Data_organoids")
 for(y in 1:length(synergy.response.data)){
-  # Individual files
-  # write.xlsx(synergy.response.data[[y]], file = paste0(names(synergy.response.data[y]), ".xlsx"), rowNames = T)
   # Workbook  
   prefix <- paste0(synergy.type, "_block_")
   sheet.name <- gsub(paste0("^", prefix, ".*?_"), "", names(synergy.response.data)[y])
@@ -207,7 +167,7 @@ for(y in 1:length(synergy.response.data)){
   addWorksheet(wb, sheetName = sheet.name)
   writeData(wb, sheet = sheet.name, synergy.response.data[[y]])
 }
-saveWorkbook(wb, file = paste0(synergy.type, "_", "Synergy_Response_Data.xlsx"), overwrite = T)
+saveWorkbook(wb, file = paste0(synergy.type, "_", "Synergy_Response_Data_organoids.xlsx"), overwrite = T)
 
 # Clean up environment
 rm("y", "wb", "prefix")
@@ -229,7 +189,7 @@ trans.synergy.response.data <- lapply(synergy.response.data, function(df) {
 })
 # 'transformed_synergy_response_data' now contains the modified data frames
 
-saveRDS(trans.synergy.response.data, file = "viability_response_data.RData")
+saveRDS(trans.synergy.response.data, file = "viability_response_data_organoids.RData")
 ```
 
 ## Plotting
@@ -243,7 +203,7 @@ drugs <- c("AZD8055", "Defactinib", "Gefitinib")
 drug.dat <- list()
 for(i in drugs){
   # Load AZD8055 from master sheet copy in the project directory, which includes synergy info (added retrospectively)
-  drug.dat[[i]] <- read.xlsx("Master_gSORG_Drugging_Template_AllReps.xlsx", paste0(i, "_R"))
+  drug.dat[[i]] <- read.xlsx("Master_gSORG_Drugging_Template_AllReps_organoids.xlsx", paste0(i, "_R"))
 }
 ```
 
@@ -534,7 +494,7 @@ for(i in drugs){
     theme(plot.background = element_rect(fill = "white", color = NA))
   
   # Save the plot
-  ggsave(paste0("Thesis_Plots/", i, ".png"),
+  ggsave(paste0("Thesis_Plots_organoids/", i, ".png"),
          plot = combined.plot[[i]],
          width = A4.width, height = 20, units = "cm", dpi = 600)
   
@@ -645,14 +605,14 @@ View(summary_2way[["Gefitinib"]])
 wb <- createWorkbook()
 # Save as individual csv's and an excel workbook
 for(i in names(summary_2way)){
-  write.csv(summary_2way[[i]], file = paste0("Interactions/", i, "_2Way.csv"))
+  write.csv(summary_2way[[i]], file = paste0("Interactions_organoids/", i, "_2Way.csv"))
   # Add a new worksheet for each drug
   addWorksheet(wb, sheetName = i)
   # Write the corresponding summary table to the worksheet
   writeData(wb, sheet = i, summary_2way[[i]], rowNames = T)
 }
 # Save the workbook to a file
-saveWorkbook(wb, "Interactions/summary_2way_interactions.xlsx", overwrite = T)
+saveWorkbook(wb, "Interactions_organoids/summary_2way_interactions.xlsx", overwrite = T)
 
 # Tidy up the environment
 rm(list = c("wb"))
@@ -755,20 +715,15 @@ View(summary_2way[["Gefitinib"]])
 wb <- createWorkbook()
 # Save as individual csv's and an excel workbook
 for(i in names(summary_2way)){
-  write.csv(summary_2way[[i]], file = paste0("Interactions/", i, "_2Way_B.csv"))
+  write.csv(summary_2way[[i]], file = paste0("Interactions_organoids/", i, "_2Way_B.csv"))
   # Add a new worksheet for each drug
   addWorksheet(wb, sheetName = i)
   # Write the corresponding summary table to the worksheet
   writeData(wb, sheet = i, summary_2way[[i]], rowNames = T)
 }
 # Save the workbook to a file
-saveWorkbook(wb, "Interactions/summary_2way_interactions_B.xlsx", overwrite = T)
+saveWorkbook(wb, "Interactions_organoids/summary_2way_interactions_B.xlsx", overwrite = T)
 
 # Tidy up the environment
 rm(list = c("wb"))
 ```
-
-### Interpretation of three-way model
-* DrugDefactinib: overall, there is a significant difference between the two drugs (across genotype and concentrarion level) in terms of their effect on organoid area (positive coefficient means oganoid area higher for Defactinib compared to Dasatinib_Defactinib).
-* Concentration_uM: there is a significant negative association between concentration and organoid area (across genotype and drug type) - as concentration increases, organoid area decreases.
-* DrugDefactinib:GenotypeWT: there is a significant interaction between drug type and genotype in terms of organoid area - i.e., the difference between Defactinib and Dasatinib_Defactinib is dependent on genotype: this manifests as the organoid area being higher for Defactinib samples (relariev to Dasatinib_Defactinib) in the CDH1 genotype.
